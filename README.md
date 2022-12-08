@@ -5,7 +5,7 @@ This is an interactive web viewer for visualizing precipitation type output. A L
 Steps to run:
 
 1) Install dependencies with ptypeviz.yml file
-2) Regrid RAP or HRRR data to a uniform grid (example file: /app/static/rap_regrid.grib2) - I suggest with wgrib2
+2) Regrid RAP or HRRR pressure file to a uniform grid (example file: /app/static/rap_regrid.grib2) - I suggest with wgrib2
 3) Run rap_ptype.py pointing to regridded file to produce jsons representing skew-t data and image tiles for the Leaflet map
 4) In top level directory enter "flask run" 
 5) Navigate to http://127.0.0.1:5000/ in web browser
