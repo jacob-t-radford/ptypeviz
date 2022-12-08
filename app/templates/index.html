@@ -1,0 +1,566 @@
+<DOCTYPE html>
+
+<meta charset="utf-8">
+
+<link rel="stylesheet" type="text/css" href="/static/css/sounding.css">
+<link rel="stylesheet" href="/static/css/leaflet.css">
+<link rel="stylesheet" href="/static/css/jquery-ui.css" type="text/css">
+
+<title>P-type Visualizations</title>
+
+<body>
+
+    <div id="leftside">
+        <div id="buttonswitch"> 
+            <button id="CNN" onclick="switchCNN()">CNN P-type</button>
+            <button id="RAP" onclick="switchRAP()">RAP P-type</button>
+        </div>
+        <div id="radarmap">
+        </div>
+    </div>
+
+
+    <div id="container">
+    <div id="mainbox"></div>
+    <div id="barchart"></div>
+    </div>
+
+</body>
+
+<script src="/static/js/leaflet2.js"></script>
+<script src="/static/js/leaflet.ajax.min.js"></script>
+<script src="/static/js/index.js"></script>
+<script src="/static/js/jquery-1.9.1.min.js"></script>
+<script src=https://cdnjs.cloudflare.com/ajax/libs/mathjs/3.3.0/math.min.js></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.3/d3.min.js"></script>
+
+<script type="text/javascript">
+
+    // Create Leaflet map
+    var LeafletMap = L.map('radarmap',{
+        keyboard: false,
+        center: [39,-96], 
+        zoom: 4
+    });
+
+    // Add OSM base
+    L.tileLayer.canvas('https://c.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 7,
+        minZoom: 4
+    }).addTo(LeafletMap);
+
+    // Add CNN p-type tile layer
+    var layer = new L.tileLayer("/static/outimages/model_tiles/{z}/{x}/{y}.png", {
+        minZoom: 4,
+        maxoom: 7,
+        tms: true
+    }).addTo(LeafletMap);
+
+    // Retrieve coordinates of map click and load corresponding sounding
+    LeafletMap.on('click', function(e) {
+        var latitude = (math.round(e.latlng.lat*10)/10).toFixed(2);
+        var longitude = (math.round(e.latlng.lng*10)/10).toFixed(2);
+        var locationstr = latitude.toString()+"_"+longitude.toString()
+        loadsounding(locationstr);
+    });
+
+    // Sounding SVG sizing
+    var m = [30, 40, 20, 35],
+        w = 500 - m[1] - m[3],
+        h = 500 - m[0] - m[2];
+
+    // Axis and coordinate conversion prep
+    var deg2rad = (Math.PI/180);
+    var tan = Math.tan(55*deg2rad),
+        basep = 1050,
+        topp = 100,
+        plines = [1000,850,700,500,300,200,100],
+        pticks = [950,900,800,750,650,600,550,450,400,350,250,150],
+        barbsize = 25;
+
+    // Scales and axes. Note the inverted domain for the y-scale: bigger is up!
+    var x = d3.scale.linear().range([0, w]).domain([-45,50]),
+        y = d3.scale.log().range([0, h]).domain([topp, basep])
+        r = d3.scale.linear().range([0,300]).domain([0,150]),
+        y2 = d3.scale.linear(),
+        xAxis = d3.svg.axis().scale(x).tickSize(0,0).ticks(10).orient("bottom"),
+        yAxis = d3.svg.axis().scale(y).tickSize(0,0).tickValues(plines)
+                  .tickFormat(d3.format(".0d")).orient("left"),
+        yAxis2 = d3.svg.axis().scale(y).tickSize(5,0).tickValues(pticks).orient("right"); // just for ticks
+
+    // various path generators
+    var line = d3.svg.line()
+        .interpolate("linear")
+        .x(function(d,i) { return x(d.temp) + (y(basep)-y(d.press))/tan; })
+        //.x(function(d,i) { return x(d.temp); })
+        .y(function(d,i) { return y(d.press); });
+        
+    var line2 = d3.svg.line()
+        .interpolate("linear")
+        .x(function(d,i) { return x(d.dwpt) + (y(basep)-y(d.press))/tan; })
+        .y(function(d,i) { return y(d.press); });
+
+    // Sounding drag functionality        
+    var drag = d3.behavior.drag()
+        .on("dragstart",dragstart)
+        .on("drag",dragmove)
+        .on("dragend",dragend);
+
+    // create svg container for sounding
+    var svg = d3.select("div#mainbox").append("svg")
+          .attr("width", w + m[1] + m[3])
+          .attr("height", h + m[0] + m[2])      
+          .attr("pointer-events","all")
+        .append("g")
+          .attr("transform", "translate(" + m[3] + "," + m[0] + ")");
+
+    // Initial ptype output for bar graph
+    var ptypedata = [{
+            "name": "Freezing Rain",
+            "value": 0.0,
+    "color": "pink",
+    },
+        {
+            "name": "Sleet",
+            "value": 0.0,
+    "color": "red",
+    },
+        {
+            "name": "Rain",
+            "value": 0.0,
+    "color": "green",
+    },
+        {
+            "name": "Snow",
+            "value": 0.0,
+    "color": "blue",
+    }];
+
+    // Bar graph creation
+    var margin = {
+        top: 50,
+        right: 40,
+        bottom: 15,
+        left: 85
+    };
+
+    var width = 400 - margin.left - margin.right,
+        height = 200 - margin.top - margin.bottom;
+
+
+    var barsvg = d3.select("#barchart").append("svg")
+        .attr("width", width + margin.left + margin.right)
+        .attr("height", height + margin.top + margin.bottom)
+    .attr("style","margin-left:50px;")
+        .append("g")
+        .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+    var xbar = d3.scale.linear()
+        .range([0, width])
+        .domain([0,1])
+
+    var ybar = d3.scale.ordinal()
+        .rangeRoundBands([height, 0], .1)
+        .domain(ptypedata.map(function (d) {
+            return d.name;
+        }));
+
+    var ybarAxis = d3.svg.axis()
+        .scale(ybar)
+        //no tick marks
+        .tickSize(0)
+        .orient("left");
+
+    var gy = barsvg.append("g")
+        .attr("class", "y axis")
+        .call(ybarAxis)
+
+    var bars = barsvg.selectAll(".bar")
+        .data(ptypedata)
+        .enter()
+        .append("g")
+
+    bars.append("rect")
+        .attr("class", "bar")
+        .attr("y", function (d) {
+            return ybar(d.name);
+        })
+        .attr("height", ybar.rangeBand())
+        .attr("x", 0)
+        .attr("width", function (d) {
+            return xbar(d.value);
+        })
+        .attr("style", function (d) {
+            return "fill: " + d.color + ";";
+        });
+
+    bars.append("text")
+        .attr("class", "label")
+        //y position of the label is halfway down the bar
+        .attr("y", function (d) {
+            return ybar(d.name) + ybar.rangeBand() / 2 + 4;
+        })
+        //x position is 3 pixels to the right of the bar
+        .attr("x", function (d) {
+            return xbar(d.value) + 3;
+        })
+        .text(function (d) {
+            return d.value;
+        });
+
+    // Draw sounding background
+    drawBackground();
+
+    // Sounding drag start functionality
+    function dragstart(d) {
+        myindex = this.id;
+        tempmax = points[myindex][0];
+        dwptmin = dwptpoints[myindex][0];
+        myorigin = parseFloat($(this).attr("originx"));
+        myoriginy = parseFloat($(this).attr("originy"));
+        selecteddatatype = $(this).attr("datatype");
+    }
+
+    // Move the circle while dragging
+    function dragmove(d) {
+        translatex = d3.event.x;
+        mynewpt = myorigin + translatex
+        d3.select(this).attr("transform","translate(" + translatex + "," + 0 + ")");
+    }
+
+    // Update temperature, dewpoint, and model predictions after dragging completed
+    function dragend(d) {
+        if (selecteddatatype=="temperature") {
+            if (mynewpt<dwptmin) {
+                var difference = dwptmin - mynewpt + translatex + 5;
+                d3.select(this).attr("transform","translate(" + difference + "," + 0 + ")");
+                mynewpt = dwptpoints[myindex][0] + 5;
+            }
+            else {
+                mynewpt = mynewpt;
+            }
+            mynewtemp = x.invert(mynewpt-((y(1050)-myoriginy)/tan));
+            tmpc[myindex] = mynewtemp;
+            d3.select(this).attr("temperature",mynewtemp);
+            points[myindex][0] = mynewpt;
+        }
+        else {
+            if (mynewpt>tempmax) {
+                var difference = tempmax - mynewpt + translatex - 5;
+                d3.select(this).attr("transform","translate(" + difference + "," + 0 + ")");
+                mynewpt = points[myindex][0] - 5;
+            }
+            else {
+                mynewpt = mynewpt;
+            }
+            mynewdew = x.invert(mynewpt-((y(1050)-myoriginy)/tan));
+            dpt[myindex] = mynewdew 
+            d3.select(this).attr("dewpoint",mynewdew);
+            dwptpoints[myindex][0] = mynewpt;
+        }
+
+        // Data to send to Python TF model via ajax
+        sendme = tmpc.concat(dpt,uwnd,vwnd) 
+        $.ajax({
+            url: '/adjustSounding',
+            data: JSON.stringify(sendme),
+            type: 'POST',
+            contentType: "application/json",
+            success: function(data) {
+                frzrprob = data["newlabels"][0];
+                sleetprob = data["newlabels"][1];
+                rainprob = data["newlabels"][2];
+                snowprob = data["newlabels"][3]
+                updatebar(frzrprob,sleetprob,rainprob,snowprob);
+            }
+        });
+
+        // Redraw temperature and dewpoint profile lines
+        update();
+    }
+
+    // Create sounding background
+    function drawBackground() {
+        var svg = d3.select("div#mainbox svg g").append("g").attr("class", "skewtbg");
+
+        var dryline = d3.svg.line()
+            .interpolate("linear")
+            .x(function(d,i) { return x( ( 273.15 + d ) / Math.pow( (1000/pp[i]), 0.286) -273.15) + (y(basep)-y(pp[i]))/tan;})
+            .y(function(d,i) { return y(pp[i])} );
+
+        tooltip = d3.select("div#mainbox").append("div")
+            .style("position","absolute")
+            .style("z-index","10")
+            .style("visibility","hidden")
+            .text("a simple tooltip");
+
+        // Add clipping path
+        svg.append("clipPath")
+            .attr("id", "clipper")
+            .append("rect")
+            .attr("x", 0)
+            .attr("y", 0)
+            .attr("width", w)
+            .attr("height", h);
+            
+        // Skewed temperature lines
+        svg.selectAll("gline")
+            .data(d3.range(-100,45,10))
+             .enter().append("line")
+             .attr("x1", function(d) { return x(d)-0.5 + (y(basep)-y(100))/tan; })
+             .attr("x2", function(d) { return x(d)-0.5; })
+             .attr("y1", 0)
+             .attr("y2", h)
+             .attr("class", function(d) { if (d == 0) { return "tempzero"; } else { return "gridline"}})
+             .attr("clip-path", "url(#clipper)");
+             
+        // Logarithmic pressure lines
+        svg.selectAll("gline2")
+            .data(plines)
+             .enter().append("line")
+             .attr("x1", 0)
+             .attr("x2", w)
+             .attr("y1", function(d) { return y(d); })
+             .attr("y2", function(d) { return y(d); })
+             .attr("class", "gridline");
+             
+        // create array to plot dry adiabats
+        var pp = d3.range(topp,basep+1,10);
+        var dryad = d3.range(-30,240,20);
+        var all = [];
+        for (i=0; i<dryad.length; i++) { 
+            var z = [];
+            for (j=0; j<pp.length; j++) { z.push(dryad[i]); }
+            all.push(z);
+        }
+
+        svg.append("g").attr("class","x axis").attr("transform","translate(0," + (h-0.5) + ")").call(xAxis);
+        svg.append("g").attr("class","y axis").attr("transform","translate(-0.5,0)").call(yAxis);
+        svg.append("g").attr("class","y axis ticks").attr("transform","translate(-0.5,0)").call(yAxis2);
+    }
+
+
+    // transform temperature data to grid coordinates
+    function datatransform(){
+        var new_array = points.map(function(e) {
+        e[0] = x(e[0])+(y(1050)-y(e[1]))/tan
+        e[1] = y(e[1]);
+        return e;
+    })}
+
+    // transform dewpoint data to grid coordinates
+    function datatransformdwpt(){
+        var new_array = dwptpoints.map(function(e) {
+        e[0] = x(e[0])+(y(1050)-y(e[1]))/tan
+        e[1] = y(e[1]);
+        return e;
+    })}
+
+    // add temperature and dewpoint points/circles
+    function myFunc(point,index) {
+        ptx = point[0];
+        pty = point[1];
+
+        dwpt = dwptpoints[index]
+        dwptx = dwpt[0];
+        dwpty = dwpt[1];
+
+        mytemp = x.invert(ptx-((y(1050)-pty)/tan));
+        mydew = x.invert(dwptx-((y(1050)-dwpty)/tan));
+
+        svg.append("g")
+        .attr("transform",`translate(${ptx},${pty})`)
+        .append("circle")
+        .attr("r",3)
+        .attr("fill","red")
+        .attr("originx",ptx)
+        .attr("originy",pty)
+        .attr("id",index)
+        .attr("temperature",mytemp)
+        .attr("datatype","temperature")
+        .call(drag)
+        .on("mouseover",function(){
+            $(this).attr("r",7);
+            return tooltip.style("top",(event.pageY - 30) + "px")
+                .text(Math.round($(this).attr("temperature")*10)/10)
+                .style("left",event.offsetX + 70 + "px")
+                .style("visibility","visible")
+                .style("background-color","white");
+        })
+
+        .on("mouseout",function(){
+            $(this).attr("r",3);
+            return tooltip.style("visibility","hidden");
+        });
+        
+
+        svg.append("g")
+            .attr("transform",`translate(${dwptx},${dwpty})`)
+            .append("circle")
+            .attr("r",3)
+            .attr("fill","green")
+            .attr("originx",dwptx)
+            .attr("originy",dwpty)
+            .attr("id",index)
+            .attr("dewpoint",mydew)
+            .attr("datatype","dewpoint")
+            .call(drag)
+            .on("mouseover",function(){
+                $(this).attr("r",7);
+                return tooltip.style("top",(event.pageY - 30) + "px")
+                    .text(Math.round($(this).attr("dewpoint")*10)/10)
+                    .style("left",event.offsetX + 70 + "px")
+                    .style("visibility","visible")
+                    .style("background-color","white");
+            })
+            .on("mouseout",function(){
+                $(this).attr("r",3);
+                return tooltip.style("visibility","hidden");
+            });
+
+    }
+
+
+    // Redraws temperature and dewpoint lines with new data
+    function update() {
+        svg.select("#temppath").attr("d",`M${points}`);
+        svg.select("#dwptpath").attr("d",`M${dwptpoints}`);
+    }
+
+    // IDK what this does (might not do anything)
+    function dragsubject(event) {
+        let subject = event.sourceEvent.target.__data__;
+    }
+
+
+    // Load sounding data for clicked location
+    function loadsounding(locationstr){
+
+        // Remove old lines and points
+        d3.select("#dwptpath").remove();
+        d3.select("#temppath").remove();
+        d3.selectAll("circle").remove();
+
+        points = [];
+        dwptpoints = [];
+
+        // Read json sounding data from file
+        d3.json('/static/jsons/' + locationstr + '.json',function(err,json) {
+                pres = json["pres"];
+                tmpc = json["temp"];
+                dpt = json["dew"];
+                uwnd = json["uwnd"];
+                vwnd = json["vwnd"];
+           
+                $.ajax({
+                    url: '/loadSounding',
+                    data: JSON.stringify(json),
+                    type: 'POST',
+                    contentType: "application/json",
+                    success: function(data) {
+                        frzrprob = data["labels"][0];
+                        sleetprob = data["labels"][1];
+                        rainprob = data["labels"][2];
+                        snowprob = data["labels"][3]
+                        updatebar(frzrprob,sleetprob,rainprob,snowprob);
+                    }
+                });
+
+                // Transform temperature and dewpoint into graph coordinates
+                prestmpc = tmpc.map(function(e, i) {
+                    pres_temporary = pres[i];
+                    pres_transform = y(pres_temporary);
+                    base_transform = y(1050);
+                    tmpc_transform = x(e)+(base_transform-pres_transform)/tan
+                    return [tmpc_transform,pres_transform];
+                })
+                presdpt = dpt.map(function(e, i) {
+                    pres_temporary = pres[i];
+                    pres_transform = y(pres_temporary);
+                    base_transform = y(1050);
+                    dpt_transform = x(e)+(base_transform-pres_transform)/tan;
+                    return [dpt_transform,pres_transform];
+                })  
+
+                points.push(prestmpc);
+                dwptpoints.push(presdpt);
+                points = points[0];
+                dwptpoints = dwptpoints[0];
+                points.forEach((point,index) => myFunc(point,index));
+
+                update();
+
+        })
+
+        datatransform();
+        datatransformdwpt();
+
+        // Draws each temp and dewpoint point
+        points.forEach((point,index) => myFunc(point,index));
+    
+        // Add temperature line
+        svg.append("path")
+            .datum(points)
+            .attr("fill","none")
+            .attr("stroke","red")
+            .attr("stroke-width",1.5)
+            .attr("id","temppath")
+            .attr("datatype","temperature")
+        ;
+
+        // Add dewpoint line
+        svg.append("path")
+            .datum(dwptpoints)
+            .attr("fill","none")
+            .attr("stroke","green")
+            .attr("stroke-width",1.5)
+            .attr("id","dwptpath")
+            .attr("datatype","dewpoint")
+        ;
+    }
+
+    // Redraw Leaflet map with RAP output
+    function switchRAP() {
+        layer.remove();
+        layer = new L.tileLayer("/static/outimages/rap_tiles/{z}/{x}/{y}.png", {
+                minZoom: 4,
+                maxoom: 7,
+                tms: true
+        }).addTo(LeafletMap);
+    }
+
+
+    // Redraw Leaflet map with CNN output
+    function switchCNN() {
+        layer.remove();
+        layer = new L.tileLayer("/static/outimages/model_tiles/{z}/{x}/{y}.png", {
+            minZoom: 4,
+            maxoom: 7,
+            tms: true
+        }).addTo(LeafletMap);
+        
+    }
+
+
+    // Update bar graph with new model output
+    function updatebar(frzrprob,sleetprob,rainprob,snowprob){
+        ptypedata[0].value = frzrprob.toFixed(2);
+        ptypedata[1].value = sleetprob.toFixed(2);
+        ptypedata[2].value = rainprob.toFixed(2);
+        ptypedata[3].value = snowprob.toFixed(2);
+
+        bars = barsvg.selectAll(".bar")
+        .attr("width",function (d) {
+            return xbar(d.value);
+        });
+
+        labels = barsvg.selectAll(".label")
+        .attr("x", function (d) {
+            return xbar(d.value) + 3;
+        })
+        .text(function (d) {
+            return d.value;
+        })
+    }
+
+</script>
